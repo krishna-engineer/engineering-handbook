@@ -1,29 +1,24 @@
-# Image Matching with FAISS — Cross-Library Scientific Illustrations
+# Image Matching with FAISS
 
-## Problem
-Find visually similar images across two scientific illustration libraries — ~1,723 images in Library A and ~14,521 in Library B. Brute-forcing LLM-based visual comparison across all combinations (~25M pairs) was cost-prohibitive.
+I learnt about this while working on a task where I had to find visually similar images across two scientific illustration libraries — ~1,723 images in Library A and ~14,521 in Library B.
+Brute-forcing LLM-based comparison across all combinations was ~25M pairs. Not feasible cost-wise. Hence the need for a smarter candidate retrieval pipeline.
 
-## Pipeline — Cost-Progressive Funnel
-
+**Pipeline:**  
 ```
-ResNet50 + FAISS   →   CLIP matching   →   GPT-4.1 visual judge
-  (coarse filter)       (refinement)        (final scoring)
+Two parallel signals -> merged candidate set -> GPT visual judge.
 ```
+*Two Signals*
+1. Name-based matching: rapidfuzz token_set_ratio on cleaned filenames. Zero compute. Catches obvious duplicates by name alone.
+2. CLIP + FAISS - Encodes all images with CLIP ViT-L/14 -> builds IndexFlatIP index -> retrieves top-4 nearest neighbors per Library A image.
 
-Each stage gets progressively more expensive and accurate. FAISS's job was purely to shrink the candidate space cheaply.
+Both signals merged and deduplicated per image before passing to GPT model.
 
-## FAISS Implementation
+**Why IndexFlatIP and not IndexFlatL2?**  
+CLIP embeddings are L2-normalized by default. On normalized vectors, inner product = cosine similarity. IndexFlatIP is the correct choice here. Using IndexFlatL2 on normalized embeddings gives subtly wrong rankings.
 
-- **Index:** `IndexFlatL2` — exact search, no approximation
-- **Embeddings:** ResNet50 pretrained, classification head removed → 2048-dim feature vectors
-- **Query:** For each Library A image, retrieve top-3 nearest neighbors from Library B
-- **Threshold:** L2 distance < 200 flagged as potential match — calibrated via SME evaluation
+**Why Flat index and not IVFPQ or HNSW?**  
+At ~14K vectors, exact brute-force search is fast enough. Approximate indexes trade recall for speed — that tradeoff only makes sense at 1M+ vectors. Here, exact recall at retrieval stage was worth more than any speed gain.
 
-## Why IndexFlatL2 and not IVFPQ or HNSW?
-
-At ~14K vectors, brute-force search is fast enough. Approximate indexes trade recall for speed — that tradeoff only makes sense at much larger scale (1M+). Here, exact recall at the retrieval stage was worth more than the marginal speed gain.
-
-## What I'd revisit
-
-- ResNet50 features are generic (ImageNet-trained). A CLIP embedding at the retrieval stage might give better semantic alignment for scientific illustrations, potentially reducing the candidate set passed to GPT-4.1.
-- The distance threshold of 200 was SME-calibrated — a precision/recall curve against a labeled pair set would make this more defensible at scale.
+**Earlier Experiment — ResNet50**  
+First iteration used ResNet50 (classification head removed) -> 2048-dim feature vectors -> IndexFlatL2 -> threshold of 200 (SME-calibrated).
+This was superseded by CLIP because ResNet50 features are generic (ImageNet-trained) and miss semantic similarity. Say, two images of a neuron in different illustration styles — ResNet50 may miss the match, CLIP catches it.
